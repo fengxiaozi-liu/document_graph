@@ -1,0 +1,115 @@
+services:
+  setup:
+    image: alpine:3.20
+    volumes:
+      - ./data:/data
+    command: ["sh", "-c", "mkdir -p /data/qdrant"]
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: document_graph
+      POSTGRES_USER: document_graph
+      POSTGRES_PASSWORD: document_graph
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U document_graph -d document_graph"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--requirepass", "document_graph"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "document_graph", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.16.2
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  migrate:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgresql+psycopg2://document_graph:document_graph@postgres:5432/document_graph
+    command: ["alembic", "upgrade", "head"]
+    restart: on-failure
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_URL: postgresql+psycopg2://document_graph:document_graph@postgres:5432/document_graph
+      REDIS_URL: redis://:document_graph@redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "document_graph.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_URL: postgresql+psycopg2://document_graph:document_graph@postgres:5432/document_graph
+      REDIS_URL: redis://:document_graph@redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    command: ["celery", "-A", "document_graph.tasks.celery_app.celery_app", "worker", "-l", "INFO"]
+
+  frontend:
+    image: node:20
+    working_dir: /app
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "3000:3000"
+    command: ["sh", "-c", "npm install && npm run dev"]
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,60 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API (FastAPI / uvicorn)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": ["document_graph.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "env": {
+        "POSTGRES_URL": "postgresql+psycopg2://document_graph:document_graph@localhost:5432/document_graph",
+        "REDIS_URL": "redis://:document_graph@localhost:6379/0",
+        "QDRANT_URL": "http://localhost:6333"
+      }
+    },
+    {
+      "name": "Worker (Celery)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "celery",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": ["-A", "document_graph.tasks.celery_app.celery_app", "worker", "-l", "INFO", "--pool", "solo"],
+      "env": {
+        "POSTGRES_URL": "postgresql+psycopg2://document_graph:document_graph@localhost:5432/document_graph",
+        "REDIS_URL": "redis://:document_graph@localhost:6379/0",
+        "QDRANT_URL": "http://localhost:6333"
+      }
+    },
+    {
+      "name": "Migrations (alembic upgrade head)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "alembic",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": ["upgrade", "head"],
+      "env": {
+        "POSTGRES_URL": "postgresql+psycopg2://document_graph:document_graph@localhost:5432/document_graph"
+      }
+    },
+    {
+      "name": "Frontend (Next.js dev)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/frontend",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "npm", "run", "dev"],
+      "console": "integratedTerminal",
+      "env": {
+        "NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"
+      }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+llm:
+  # OpenAI-compatible Chat Completions endpoint base URL.
+  # Examples:
+  # - https://api.openai.com
+  # - https://dashscope.aliyuncs.com/compatible-mode
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode"
+  api_key: "REPLACE_ME"
+  model: "qwen-plus"
+  temperature: 0.2
+
+embedding:
+  # OpenAI-compatible Embeddings endpoint base URL.
+  # Can be the same as llm.base_url.
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode"
+  api_key: "REPLACE_ME"
+  model: "text-embedding-v3"
+  # DashScope compatible-mode has a strict max batch size (often <= 10).
+  batch_size: 10
+
+qdrant:
+  url: "http://localhost:6333"
+  collection: "document_graph_chunks"
+  distance: "Cosine" # Cosine | Dot | Euclid
+
+paths:
+  export_dir: "data/local_export"
+  chunks_jsonl: "data/local_export/chunks/chunks.jsonl"
+
+chunking:
+  # Char-based defaults (simple + robust). Tune later if you add a tokenizer.
+  target_chars: 1200
+  max_chars: 2400
+  overlap_chars: 200
+
