@@ -2,17 +2,6 @@
 
 本仓库提供一个“本地文档 → 向量检索 → 生成式问答（RAG）”的最小可用闭环，支持把 LLM 与 embedding 都配置为远程 OpenAI 兼容接口（例如 Qwen 兼容模式）。
 
-## 新版 MVP（重构中：Workspace + FastAPI + Postgres + Redis + Celery + Qdrant + LangGraph）
-
-本版本目标（见 `docs/architecture.md`）：
-- Workspace（每个 workspace 一个 Qdrant collection，alias 可中文展示）
-- 文档上传（`local_upload` source）→ 异步索引任务（`document_index`：`persist_meta -> chunk -> embedding_upsert -> delete_old`）
-- 对话问答（conversation 维度 session，token 窗口控制，同 conversation 禁并发）
-
-数据与实现细节：
-- 数据模型：`docs/data_model.md`
-- 任务系统：`docs/task_system.md`
-- LangGraph 编排：`docs/langgraph_flow.md`
 
 ### 运行（docker compose）
 

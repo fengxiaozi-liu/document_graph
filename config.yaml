@@ -4,7 +4,7 @@ llm:
   # - https://api.openai.com
   # - https://dashscope.aliyuncs.com/compatible-mode
   base_url: "https://dashscope.aliyuncs.com/compatible-mode"
-  api_key: "sk-8c15daa3bea74a36a3a7bc7481beb34c"
+  api_key: ""
   model: "qwen-plus"
   temperature: 0.2
 
@@ -12,7 +12,7 @@ embedding:
   # OpenAI-compatible Embeddings endpoint base URL.
   # Can be the same as llm.base_url.
   base_url: "https://dashscope.aliyuncs.com/compatible-mode"
-  api_key: "sk-8c15daa3bea74a36a3a7bc7481beb34c"
+  api_key: ""
   model: "text-embedding-v4"
   # DashScope compatible-mode has a strict max batch size (often <= 10).
   batch_size: 10

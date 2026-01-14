@@ -4,6 +4,8 @@ import logging
 import mimetypes
 from pathlib import Path
 
+from document_graph.config import load_app_config
+
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,10 @@ SUPPORTED_EXTENSIONS = {
     ".htm",
     ".pdf",
     ".docx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
 }
 
 
@@ -89,6 +95,35 @@ def _extract_docx_text(path: Path) -> str:
     return "\n\n".join(parts).strip()
 
 
+def _extract_image_ocr_text(path: Path) -> str:
+    cfg = load_app_config()
+    if not cfg.ocr.enabled:
+        raise UnsupportedDocumentType("image_ocr_disabled")
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise MissingParserDependency("missing dependency: pillow") from exc
+    try:
+        import pytesseract
+    except ImportError as exc:
+        raise MissingParserDependency("missing dependency: pytesseract (and tesseract-ocr runtime)") from exc
+
+    if cfg.ocr.tesseract_cmd:
+        try:
+            pytesseract.pytesseract.tesseract_cmd = cfg.ocr.tesseract_cmd
+        except Exception:
+            pass
+
+    img = Image.open(path).convert("RGB")
+    try:
+        text = pytesseract.image_to_string(img, lang=cfg.ocr.lang) or ""
+    except OSError as exc:
+        raise MissingParserDependency(
+            "tesseract_not_found: install tesseract-ocr and ensure it is in PATH (or set ocr.tesseract_cmd / TESSERACT_CMD)"
+        ) from exc
+    return text.strip()
+
+
 def read_for_chunking(path: Path) -> tuple[str, str]:
     ext = path.suffix.lower()
     if not is_supported_extension(ext):
@@ -100,6 +135,8 @@ def read_for_chunking(path: Path) -> tuple[str, str]:
         return _extract_pdf_text(path), "text"
     if ext == ".docx":
         return _extract_docx_text(path), "text"
+    if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+        return _extract_image_ocr_text(path), "text"
 
     raise UnsupportedDocumentType(f"unsupported file type: {ext or 'unknown'}")
 

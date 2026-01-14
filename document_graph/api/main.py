@@ -7,7 +7,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from document_graph.api.routers import chat, conversations, health, tasks, workspaces
+from document_graph.api.routers import chat, conversations, health, images, messages, tasks, workspaces
 from document_graph.api.routers import documents
 from document_graph.logging_config import setup_logging
 
@@ -32,6 +32,8 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, prefix="/workspaces/{workspace_id}/documents", tags=["documents"])
     app.include_router(chat.router, prefix="/workspaces/{workspace_id}", tags=["chat"])
     app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
+    app.include_router(messages.router, tags=["messages"])
+    app.include_router(images.router, tags=["images"])
     logger.info("api_ready")
     return app
 

@@ -2,6 +2,8 @@
 
 本文档定义 document_graph 的文档解析与清洗策略，涵盖支持的文件类型、限制、错误处理与性能注意事项。后续新增解析能力时优先在此文档更新。
 
+> 关联改进分支：`docs/branch_media_and_ux_improvements.md`（图片双通道：OCR + 多模态向量）。
+
 ## 总体流程（适用于所有类型）
 
 1) 类型识别：基于上传文件名、`mime_type`、`file_ext` 以及必要的内容探测。
@@ -49,10 +51,47 @@
 - 当前默认不支持 `.doc`，需要额外的系统级依赖与旧版解析库。
 - 如必须支持，可单独接入专用解析器并补充依赖说明。
 
-### 图片（.png/.jpg/.jpeg 等，暂不支持）
+### 图片（.png/.jpg/.jpeg/.webp，支持 OCR + 多模态）
 
-- 当前版本不做单独图片解析；图片文件默认不进入索引。
-- 后续如引入 OCR 或多模态解析，可在本节补充策略与限制。
+> 目标：图片能力需要 **同时支持 OCR 与多模态理解/检索**（见 `docs/branch_media_and_ux_improvements.md`）。
+
+#### 支持范围（拟）
+
+- 扩展名：`.png` / `.jpg` / `.jpeg`（可选：`.webp`）
+- 产物：
+  - **OCR 文本**：用于 RAG 的“可引用证据”
+  - **图片向量**：用于多模态召回（以图搜图/以文搜图）
+
+#### 索引策略（双通道）
+
+1) OCR 通道（文本证据）
+- 抽取：对图片做 OCR 得到文本（可选带置信度/语言）。
+- 规范化：去噪、统一空白与编码；必要时做行/段落重排。
+- 切分：把 OCR 文本进入通用 chunking（与 txt 类似）。
+- 向量化：使用文本 embedding 写入 Qdrant 的 `text` 向量（建议采用 named vectors）。
+- 引用：对话 RAG 命中时展示 OCR 文本 chunk（可回溯至原图）。
+
+2) 多模态通道（图片理解/检索）
+- 向量化：对图片本体生成 image embedding，写入 Qdrant 的 `image` 向量（named vectors）。
+- payload：至少包含 `document_id/document_version_id/chunk_uid/modality=image`，用于检索结果展示与过滤。
+- 召回入口：
+  - chat/RAG 默认仍走 `text` 召回（可命中 OCR 证据）
+  - 如需独立图片检索，可单独提供 API/前端入口走 `image` 召回
+
+#### 依赖与实现选项
+
+- OCR：
+  - 本地：Tesseract（系统依赖）+ `pytesseract`（Python）
+  - 或云 OCR：由配置选择 provider（适合容器化部署与中文识别）
+- 多模态 embedding：
+  - OpenAI-compatible 的多模态 embedding（若供应商支持）
+  - 或自建 CLIP/视觉模型服务（HTTP）
+
+#### 限制与注意事项
+
+- OCR 对扫描质量/语言模型敏感：需可配置语言、分辨率缩放、超时与重试。
+- 仅有图片向量无法直接作为 RAG 证据：必须保留 OCR 文本或结构化描述作为“证据片段”。
+- 成本控制：OCR 与图片 embedding 建议均在异步索引任务中执行，必要时提供开关与批量限流。
 
 ## 错误处理
 

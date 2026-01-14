@@ -32,3 +32,22 @@ chunking:
   max_chars: 2400
   overlap_chars: 200
 
+ocr:
+  # OCR for images (png/jpg/jpeg/webp). Requires Tesseract in runtime image.
+  enabled: true
+  # Tesseract language packs (e.g. "eng", "chi_sim", "eng+chi_sim")
+  lang: "eng"
+  # Optional: absolute path to tesseract binary for local dev (Windows).
+  # Example: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+  # Can also be provided via env var `TESSERACT_CMD`.
+  tesseract_cmd: null
+
+multimodal:
+  # Multimodal image embedding (used for image search / multimodal recall).
+  # Default disabled to keep runtime light.
+  enabled: false
+  backend: "openclip"
+  model: "ViT-B-32"
+  pretrained: "laion2b_s34b_b79k"
+  device: "cpu"
+

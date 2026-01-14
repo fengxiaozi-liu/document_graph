@@ -12,15 +12,29 @@ from sqlalchemy.orm import Session
 from document_graph.config import load_app_config
 from document_graph.db.models import Chunk, Conversation, MemorySummary, Message, Workspace
 from document_graph.openai_compat import OpenAICompatClient
+from document_graph.redis_utils import cache_append_message, cache_get_recent_messages, cache_get_summary, cache_set_summary
 from document_graph.token_counter import approx_message_tokens, approx_tokens
 
 
 SYSTEM_PROMPT = """你是一个企业文档问答助手。
 要求：
 1) 只根据给定的“证据片段”回答；证据不足时，明确说“不确定/文档中未找到”并建议下一步查什么。
-2) 输出结构：先给“答案”（尽量简洁），再给“引用”（列出用到的证据编号与来源）。
+2) 只输出答案正文，不要在文本中附加“引用/References/证据列表”等内容；引用信息由系统单独展示。
 3) 不要编造来源、不要输出与证据无关的内容。
 """
+
+
+def _strip_inline_citations(answer: str) -> str:
+    # UI already renders refs from structured output; keep answer concise.
+    markers = ["\n引用", "\nReferences", "\n参考", "\n证据"]
+    cut = None
+    for m in markers:
+        i = answer.find(m)
+        if i != -1:
+            cut = i if cut is None else min(cut, i)
+    if cut is None:
+        return answer.strip()
+    return answer[:cut].strip()
 
 
 class ChatState(TypedDict, total=False):
@@ -40,6 +54,7 @@ class ChatState(TypedDict, total=False):
 @dataclass(frozen=True)
 class ChatDeps:
     db: Session
+    redis: Any | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -69,27 +84,81 @@ def _load_session(state: ChatState, deps: ChatDeps) -> ChatState:
 
 
 def _persist_user_message(state: ChatState, deps: ChatDeps) -> ChatState:
-    msg = Message(conversation_id=uuid.UUID(state["conversation_id"]), role="user", content=state["user_message"])
+    msg = Message(
+        conversation_id=uuid.UUID(state["conversation_id"]),
+        role="user",
+        content=state["user_message"],
+        metadata_={},
+    )
     deps.db.add(msg)
     deps.db.commit()
+    if deps.redis is not None:
+        try:
+            cache_append_message(
+                deps.redis,
+                conversation_id=state["conversation_id"],
+                role="user",
+                content=state["user_message"],
+                metadata={},
+                max_messages=50,
+                ttl_s=7 * 24 * 3600,
+            )
+        except Exception:
+            pass
     return {}
 
 
 def _load_memory(state: ChatState, deps: ChatDeps) -> ChatState:
     conv_id = uuid.UUID(state["conversation_id"])
-    summary = deps.db.query(MemorySummary).filter(MemorySummary.conversation_id == conv_id).one_or_none()
-    memory_summary = summary.summary if summary else ""
+    memory_summary = ""
+    history: list[dict[str, str]] = []
 
-    # Load recent messages; we will trim by token budget later.
-    rows = (
-        deps.db.query(Message)
-        .filter(Message.conversation_id == conv_id)
-        .order_by(Message.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    rows.reverse()
-    history = [{"role": r.role, "content": r.content} for r in rows]
+    if deps.redis is not None:
+        cached_summary = cache_get_summary(deps.redis, conversation_id=str(conv_id))
+        if cached_summary is not None:
+            memory_summary = cached_summary
+        cached_messages = cache_get_recent_messages(deps.redis, conversation_id=str(conv_id), limit=50)
+        if cached_messages is not None:
+            history = [
+                {"role": str(m.get("role") or ""), "content": str(m.get("content") or "")}
+                for m in cached_messages
+                if m.get("role") and m.get("content") is not None
+            ]
+
+    if memory_summary == "":
+        summary = deps.db.query(MemorySummary).filter(MemorySummary.conversation_id == conv_id).one_or_none()
+        memory_summary = summary.summary if summary else ""
+        if deps.redis is not None:
+            try:
+                cache_set_summary(deps.redis, conversation_id=str(conv_id), summary=memory_summary, ttl_s=7 * 24 * 3600)
+            except Exception:
+                pass
+
+    if not history:
+        rows = (
+            deps.db.query(Message)
+            .filter(Message.conversation_id == conv_id)
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(50)
+            .all()
+        )
+        rows.reverse()
+        history = [{"role": r.role, "content": r.content} for r in rows]
+        if deps.redis is not None and rows:
+            try:
+                for r in rows:
+                    cache_append_message(
+                        deps.redis,
+                        conversation_id=str(conv_id),
+                        role=r.role,
+                        content=r.content,
+                        metadata=getattr(r, "metadata_", {}) or {},
+                        max_messages=50,
+                        ttl_s=7 * 24 * 3600,
+                    )
+            except Exception:
+                pass
+
     return {"history": history, "memory_summary": memory_summary}
 
 
@@ -99,19 +168,30 @@ def _retrieve_vectors(state: ChatState, deps: ChatDeps) -> ChatState:
     qdrant = QdrantClient(url=cfg.qdrant.url)
 
     q_vec = embed.embeddings(model=cfg.embedding.model, inputs=[state["user_message"]])[0]
+
+    query_vec: Any = q_vec
+    if cfg.multimodal.enabled:
+        try:
+            info = qdrant.get_collection(state["qdrant_collection"])
+            vectors = info.config.params.vectors
+            if isinstance(vectors, dict) and "text" in vectors:
+                query_vec = ("text", q_vec)
+        except Exception:
+            # Fall back to single-vector query.
+            query_vec = q_vec
     try:
         limit = int(state.get("top_k") or 8)
         if hasattr(qdrant, "search"):
             hits = qdrant.search(
                 collection_name=state["qdrant_collection"],
-                query_vector=q_vec,
+                query_vector=query_vec,
                 limit=limit,
                 with_payload=True,
             )
         else:
             result = qdrant.query_points(
                 collection_name=state["qdrant_collection"],
-                query=q_vec,
+                query=query_vec,
                 limit=limit,
                 with_payload=True,
                 with_vectors=False,
@@ -224,13 +304,31 @@ def _answer_with_citations(state: ChatState, deps: ChatDeps) -> ChatState:
     messages.append({"role": "user", "content": user_prompt})
 
     answer = llm.chat_completions(model=cfg.llm.model, messages=messages, temperature=cfg.llm.temperature)
-    return {"answer": answer.strip(), "refs": refs}
+    return {"answer": _strip_inline_citations(answer), "refs": refs}
 
 
 def _persist_assistant_message(state: ChatState, deps: ChatDeps) -> ChatState:
-    msg = Message(conversation_id=uuid.UUID(state["conversation_id"]), role="assistant", content=state["answer"])
+    msg = Message(
+        conversation_id=uuid.UUID(state["conversation_id"]),
+        role="assistant",
+        content=state["answer"],
+        metadata_={"refs": state.get("refs") or []},
+    )
     deps.db.add(msg)
     deps.db.commit()
+    if deps.redis is not None:
+        try:
+            cache_append_message(
+                deps.redis,
+                conversation_id=state["conversation_id"],
+                role="assistant",
+                content=state["answer"],
+                metadata={"refs": state.get("refs") or []},
+                max_messages=50,
+                ttl_s=7 * 24 * 3600,
+            )
+        except Exception:
+            pass
     return {}
 
 
@@ -256,8 +354,16 @@ def build_chat_graph(deps: ChatDeps) -> Any:
     g.add_edge("persist_assistant_message", END)
     return g.compile()
 
-def run_chat(*, db: Session, workspace_id: str, conversation_id: str | None, user_message: str, top_k: int = 8) -> ChatState:
-    deps = ChatDeps(db=db)
+def run_chat(
+    *,
+    db: Session,
+    workspace_id: str,
+    conversation_id: str | None,
+    user_message: str,
+    top_k: int = 8,
+    redis: Any | None = None,
+) -> ChatState:
+    deps = ChatDeps(db=db, redis=redis)
     graph = build_chat_graph(deps)
     state: ChatState = {
         "workspace_id": workspace_id,

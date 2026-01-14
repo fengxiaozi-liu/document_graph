@@ -2,6 +2,19 @@
 
 本仓库的 MVP 目标是跑通“本地文档 → 向量检索 → 生成式问答（RAG）”的闭环，并为后续 GraphRAG/知识图谱扩展预留接口。
 
+## 变更管理（分支式推进）
+
+本仓库的架构文档采用“主线 + 分支文档”的方式推进：
+
+- `docs/architecture.md`：主线（已落地/已确认的最小闭环）
+- `docs/branch_media_and_ux_improvements.md`：本轮改进分支（媒体能力 + 体验闭环）的设计与 TODO 清单
+
+规则：
+- 改进项先写入分支文档并按 TODO 清单逐项实现；
+- 分支文档 TODO 全部完成后，再将结论合并回 `docs/architecture.md`；
+- 如涉及数据库结构变更，必须通过 Alembic 迁移落地；
+- 关联文档需同步更新（本轮至少包括 `docs/document_type_parsing.md`）。
+
 ## 现状总结（我们已完成）
 
 - 已切换到“workspace + 后端服务化”的重构版（旧版 `scripts/` 脚本 MVP 已移除）。
@@ -405,6 +418,18 @@ Qdrant 的 payload 本质上是“半 schema-less”（可以直接写 JSON）�
 - **UI 信息架构（NotebookLLM 风格）**：
   - workspace 列表页（精选/最近打开/新建）；
   - workspace 详情页（来源/上传、对话面板、引用定位）。
+
+## 分支：媒体能力 + 体验闭环（拟 v0.2）
+
+本轮已确认的改进方向与 TODO 清单统一维护在：
+
+- `docs/branch_media_and_ux_improvements.md`
+
+该分支包含：
+- Redis 缓存（最近消息/摘要）与历史对话回放（含引用持久化）
+- 前端 download + PDF/DOCX 富预览
+- 文件夹批量上传与树形展示
+- 图片双通道索引（OCR + 多模态向量）
 
 ## `scripts/`（已移除）
 

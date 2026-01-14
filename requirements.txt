@@ -17,3 +17,7 @@ redis>=5.0.0
 langgraph>=0.1.0
 pypdf>=4.0.0
 python-docx>=1.1.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+torch>=2.2.0
+open_clip_torch>=2.24.0

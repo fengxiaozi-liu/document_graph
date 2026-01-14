@@ -64,6 +64,7 @@ def chat(workspace_id: uuid.UUID, payload: ChatRequest, db: Session = DBDep) -> 
                 conversation_id=str(conv_id),
                 user_message=payload.message,
                 top_k=int(payload.top_k),
+                redis=r,
             )
     except RuntimeError as e:
         if str(e) == "conversation_locked":

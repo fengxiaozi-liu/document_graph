@@ -139,6 +139,8 @@ def document_index(self, *, task_id: str) -> None:
         std_logger.info("document_index_chunk_start task_id=%s document_id=%s", task_id, doc.id)
 
         cfg = load_app_config()
+        image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+        is_image = storage_path.suffix.lower() in image_exts
         chunks = []
         try:
             for i, c in enumerate(iter_chunks_for_file(storage_path, chunking=cfg.chunking)):
@@ -156,9 +158,39 @@ def document_index(self, *, task_id: str) -> None:
                     )
                 )
         except (UnsupportedDocumentType, MissingParserDependency) as exc:
-            raise RuntimeError(str(exc)) from exc
+            # If OCR is unavailable locally (e.g. tesseract missing), optionally allow multimodal-only indexing.
+            if is_image and isinstance(exc, MissingParserDependency) and cfg.multimodal.enabled:
+                std_logger.warning(
+                    "ocr_unavailable_multimodal_only task_id=%s document_id=%s error=%s",
+                    task_id,
+                    doc.id,
+                    exc,
+                )
+                chunks = []
+            else:
+                raise RuntimeError(str(exc)) from exc
         if not chunks:
-            raise RuntimeError("no_chunks_produced")
+            if is_image:
+                if cfg.multimodal.enabled:
+                    std_logger.info(
+                        "document_index_no_ocr_text_but_multimodal_enabled task_id=%s document_id=%s",
+                        task_id,
+                        doc.id,
+                    )
+                else:
+                    _set_task(
+                        db,
+                        task,
+                        status="succeeded",
+                        stage=None,
+                        progress=1.0,
+                        result={"skipped": "ocr_empty", "indexed_chunks": 0},
+                        finished_at=_utcnow(),
+                    )
+                    std_logger.info("document_index_skipped_empty_ocr task_id=%s document_id=%s", task_id, doc.id)
+                    return
+            else:
+                raise RuntimeError("no_chunks_produced")
 
         for row in chunks:
             db.add(row)
@@ -172,13 +204,39 @@ def document_index(self, *, task_id: str) -> None:
         qdrant = QdrantClient(url=cfg.qdrant.url)
 
         # Probe vector size and ensure collection exists.
-        probe_vec = embed.embeddings(model=cfg.embedding.model, inputs=[chunks[0].text])[0]
+        probe_text = chunks[0].text if chunks else "probe"
+        probe_vec = embed.embeddings(model=cfg.embedding.model, inputs=[probe_text])[0]
+        use_named_vectors = False
+        named_vectors = None
+        if cfg.multimodal.enabled:
+            try:
+                from document_graph.multimodal import embedding_dim
+            except MissingParserDependency as exc:
+                raise RuntimeError(str(exc)) from exc
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+            named_vectors = {"text": len(probe_vec), "image": int(embedding_dim())}
+            use_named_vectors = True
         ensure_collection(
             qdrant,
             collection=ws.qdrant_collection,
             vector_size=len(probe_vec),
             distance=to_distance(cfg.qdrant.distance),
+            named_vectors=named_vectors if use_named_vectors else None,
         )
+        if use_named_vectors:
+            try:
+                info = qdrant.get_collection(ws.qdrant_collection)
+                vectors = info.config.params.vectors
+                if not (isinstance(vectors, dict) and "text" in vectors and "image" in vectors):
+                    std_logger.warning(
+                        "collection_not_named_vectors workspace_id=%s collection=%s",
+                        ws.id,
+                        ws.qdrant_collection,
+                    )
+                    use_named_vectors = False
+            except Exception:
+                use_named_vectors = False
 
         # Optional: ensure alias points to collection (only if alias exists).
         if ws.qdrant_alias:
@@ -186,25 +244,71 @@ def document_index(self, *, task_id: str) -> None:
 
         batch_size = int(cfg.embedding.batch_size)
         indexed = 0
-        for start in range(0, len(chunks), batch_size):
-            batch = chunks[start : start + batch_size]
-            texts = [b.text for b in batch]
-            vectors = embed.embeddings(model=cfg.embedding.model, inputs=texts)
-            chunk_uids = [b.chunk_uid for b in batch]
-            payloads = [
-                {
-                    "chunk_uid": b.chunk_uid,
-                    "document_id": str(doc.id),
-                    "document_version_id": str(dv.id),
-                    "offset_start": b.offset_start,
-                    "offset_end": b.offset_end,
-                }
-                for b in batch
-            ]
-            upsert_points(qdrant, collection=ws.qdrant_collection, vectors=vectors, payloads=payloads, chunk_uids=chunk_uids)
-            indexed += len(batch)
+        if chunks:
+            for start in range(0, len(chunks), batch_size):
+                batch = chunks[start : start + batch_size]
+                texts = [b.text for b in batch]
+                vectors = embed.embeddings(model=cfg.embedding.model, inputs=texts)
+                chunk_uids = [b.chunk_uid for b in batch]
+                payloads = [
+                    {
+                        "chunk_uid": b.chunk_uid,
+                        "document_id": str(doc.id),
+                        "document_version_id": str(dv.id),
+                        "offset_start": b.offset_start,
+                        "offset_end": b.offset_end,
+                        "modality": "text",
+                    }
+                    for b in batch
+                ]
+                upsert_points(
+                    qdrant,
+                    collection=ws.qdrant_collection,
+                    vectors=vectors,
+                    payloads=payloads,
+                    chunk_uids=chunk_uids,
+                    vector_name=("text" if use_named_vectors else None),
+                )
+                indexed += len(batch)
 
-        _set_task(db, task, stage="delete_old", progress=0.9, result={"indexed_chunks": indexed})
+        if cfg.multimodal.enabled and is_image and use_named_vectors:
+            try:
+                from document_graph.multimodal import image_embedding
+            except MissingParserDependency as exc:
+                raise RuntimeError(str(exc)) from exc
+            img_vec = image_embedding(storage_path)
+            img_uid = f"image_{doc.id.hex}_{version_num}"
+            upsert_points(
+                qdrant,
+                collection=ws.qdrant_collection,
+                vectors=[img_vec],
+                payloads=[
+                    {
+                        "chunk_uid": img_uid,
+                        "document_id": str(doc.id),
+                        "document_version_id": str(dv.id),
+                        "offset_start": 0,
+                        "offset_end": 0,
+                        "modality": "image",
+                    }
+                ],
+                chunk_uids=[img_uid],
+                vector_name="image",
+            )
+        elif cfg.multimodal.enabled and is_image and not use_named_vectors:
+            std_logger.warning(
+                "multimodal_skipped_collection_not_named_vectors task_id=%s document_id=%s",
+                task_id,
+                doc.id,
+            )
+
+        _set_task(
+            db,
+            task,
+            stage="delete_old",
+            progress=0.9,
+            result={"indexed_chunks": indexed, "indexed_image": bool(cfg.multimodal.enabled and is_image and use_named_vectors)},
+        )
         std_logger.info("document_index_embedding_done task_id=%s indexed_chunks=%s", task_id, indexed)
 
         if previous_version is not None:

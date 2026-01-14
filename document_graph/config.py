@@ -53,11 +53,29 @@ class ChunkingConfig:
 
 
 @dataclass(frozen=True)
+class OCRConfig:
+    enabled: bool = True
+    lang: str = "eng"
+    tesseract_cmd: str | None = None
+
+
+@dataclass(frozen=True)
+class MultimodalConfig:
+    enabled: bool = False
+    backend: str = "openclip"
+    model: str = "ViT-B-32"
+    pretrained: str = "laion2b_s34b_b79k"
+    device: str = "cpu"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LLMConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
     chunking: ChunkingConfig = ChunkingConfig()
+    ocr: OCRConfig = OCRConfig()
+    multimodal: MultimodalConfig = MultimodalConfig()
 
 
 def load_app_config(path: str = "config.yaml") -> AppConfig:
@@ -89,6 +107,8 @@ def load_app_config(path: str = "config.yaml") -> AppConfig:
     embedding = data.get("embedding") or {}
     qdrant = data.get("qdrant") or {}
     chunking = data.get("chunking") or {}
+    ocr = data.get("ocr") or {}
+    multimodal = data.get("multimodal") or {}
 
     return AppConfig(
         llm=LLMConfig(
@@ -111,6 +131,18 @@ def load_app_config(path: str = "config.yaml") -> AppConfig:
             target_chars=int(chunking.get("target_chars", 1200)),
             max_chars=int(chunking.get("max_chars", 2400)),
             overlap_chars=int(chunking.get("overlap_chars", 200)),
+        ),
+        ocr=OCRConfig(
+            enabled=bool(ocr.get("enabled", True)),
+            lang=str(ocr.get("lang", "eng")),
+            tesseract_cmd=str(ocr.get("tesseract_cmd")) if ocr.get("tesseract_cmd") else _env("TESSERACT_CMD"),
+        ),
+        multimodal=MultimodalConfig(
+            enabled=bool(multimodal.get("enabled", False)),
+            backend=str(multimodal.get("backend", "openclip")),
+            model=str(multimodal.get("model", "ViT-B-32")),
+            pretrained=str(multimodal.get("pretrained", "laion2b_s34b_b79k")),
+            device=str(multimodal.get("device", "cpu")),
         ),
     )
 
